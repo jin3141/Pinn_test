@@ -3,9 +3,8 @@ title: PINN Burgers Equation Solver
 emoji: 🌊
 colorFrom: blue
 colorTo: purple
-sdk: streamlit
-sdk_version: "1.28.0"
-app_file: app.py
+sdk: docker
+app_port: 8501
 pinned: false
 license: mit
 ---
@@ -92,23 +91,22 @@ PINNの損失関数は以下の3つの項から構成されます：
 
 無料枠が比較的寛大で、機械学習アプリに最適です。
 
-#### 方法1: GitHubから直接デプロイ
+#### 方法1: Git CLIで直接プッシュ（最速・推奨）
 
 1. [Hugging Face](https://huggingface.co/)でアカウント作成（無料）
-2. [新しいSpaceを作成](https://huggingface.co/new-space)
+2. [Access Token取得](https://huggingface.co/settings/tokens) - "Write"権限で作成
+3. [新しいSpaceを作成](https://huggingface.co/new-space)
    - Space name: 任意の名前（例: `pinn-burgers-solver`）
    - License: MIT
-   - Select the SDK: **Streamlit**
+   - Select the SDK: **Docker**（Streamlitは2026年以降Dockerベースに移行）
    - Space hardware: **CPU basic** (無料)
-3. 「Create Space」をクリック
-4. 作成されたSpaceで「Files」タブ → 「Add file」 → 「Upload files」
-5. 以下のファイルをアップロード：
-   - `app.py`
-   - `pinn_burgers.py`
-   - `numerical_solver.py`
-   - `requirements.txt`
-   - `README.md`
-6. 数分待つと自動的にデプロイされます
+4. GitリモートとしてHF Spaceを追加し、プッシュ：
+   ```bash
+   git remote add hf https://huggingface.co/spaces/YOUR_USERNAME/pinn-burgers-solver
+   git push hf main:main --force
+   ```
+   （認証: Username = HFユーザー名, Password = Access Token）
+5. 5-10分でビルド完了、アプリが起動します
 
 #### 方法2: Gitリポジトリから同期（自動更新）
 
