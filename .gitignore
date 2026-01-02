@@ -49,3 +49,14 @@ Thumbs.db
 
 # Streamlit
 .streamlit/
+
+# Development and test artifacts
+burgers_solver_robust.py
+burgers_solver_simple.py
+numerical_solver_simple.py
+test_explicit_fdm.py
+test_simple_fdm.py
+*.png
+burgers_validation.png
+simple_fdm_test.png
+pinn_vs_numerical.png
