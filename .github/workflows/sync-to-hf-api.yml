@@ -29,27 +29,36 @@ jobs:
           python3 << 'EOF'
           from huggingface_hub import HfApi
           import os
+          import time
 
           api = HfApi()
           token = os.environ.get("HF_TOKEN")
           repo_id = "jin3141/Pinn-test"
 
-          # アップロードするファイルのリスト
+          # アップロードするファイルのリスト（優先順位順）
           files = [
               "Dockerfile",
               "README.md",
+              "requirements.txt",
               "app.py",
               "pinn_burgers.py",
               "numerical_solver.py",
-              "requirements.txt",
               ".gitignore"
           ]
 
           print(f"🚀 Uploading files to {repo_id}...")
 
+          failed_files = []
+
           for file_path in files:
-              if os.path.exists(file_path):
-                  print(f"📤 Uploading {file_path}...")
+              if not os.path.exists(file_path):
+                  print(f"⚠️  {file_path} not found, skipping")
+                  continue
+
+              print(f"📤 Uploading {file_path}...")
+
+              # リトライロジック（最大3回）
+              for attempt in range(3):
                   try:
                       api.upload_file(
                           path_or_fileobj=file_path,
@@ -58,12 +67,23 @@ jobs:
                           repo_type="space",
                           token=token
                       )
-                      print(f"✅ {file_path} uploaded")
+                      print(f"✅ {file_path} uploaded successfully")
+                      break  # 成功したらループを抜ける
                   except Exception as e:
-                      print(f"❌ Failed to upload {file_path}: {e}")
-                      raise
-              else:
-                  print(f"⚠️ {file_path} not found")
+                      if attempt < 2:  # 最後の試行でない場合
+                          wait_time = 2 ** attempt  # 指数バックオフ: 1s, 2s
+                          print(f"⚠️  Retry {attempt + 1}/3 for {file_path} after {wait_time}s: {e}")
+                          time.sleep(wait_time)
+                      else:
+                          # 最後の試行でも失敗した場合
+                          print(f"❌ Failed to upload {file_path} after 3 attempts: {e}")
+                          # .gitignoreの失敗は無視、他は記録
+                          if file_path != ".gitignore":
+                              failed_files.append(file_path)
 
-          print("✨ Sync complete!")
+          if failed_files:
+              print(f"\n❌ Failed to upload critical files: {', '.join(failed_files)}")
+              raise Exception(f"Failed to upload: {', '.join(failed_files)}")
+          else:
+              print("\n✨ Sync complete!")
           EOF
