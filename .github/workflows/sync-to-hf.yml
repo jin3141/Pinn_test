@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - claude/pinn-burgers-equation-CGuOc
+  workflow_dispatch:  # 手動実行を許可
 
 jobs:
   sync-to-huggingface:
