@@ -1,0 +1,69 @@
+name: Sync to Hugging Face Spaces (API)
+
+on:
+  push:
+    branches:
+      - claude/pinn-burgers-equation-CGuOc
+  workflow_dispatch:
+
+jobs:
+  sync-to-huggingface:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install huggingface_hub
+
+      - name: Upload files to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python3 << 'EOF'
+          from huggingface_hub import HfApi
+          import os
+
+          api = HfApi()
+          token = os.environ.get("HF_TOKEN")
+          repo_id = "jin3141/Pinn-test"
+
+          # アップロードするファイルのリスト
+          files = [
+              "Dockerfile",
+              "README.md",
+              "app.py",
+              "pinn_burgers.py",
+              "numerical_solver.py",
+              "requirements.txt",
+              ".gitignore"
+          ]
+
+          print(f"🚀 Uploading files to {repo_id}...")
+
+          for file_path in files:
+              if os.path.exists(file_path):
+                  print(f"📤 Uploading {file_path}...")
+                  try:
+                      api.upload_file(
+                          path_or_fileobj=file_path,
+                          path_in_repo=file_path,
+                          repo_id=repo_id,
+                          repo_type="space",
+                          token=token
+                      )
+                      print(f"✅ {file_path} uploaded")
+                  except Exception as e:
+                      print(f"❌ Failed to upload {file_path}: {e}")
+                      raise
+              else:
+                  print(f"⚠️ {file_path} not found")
+
+          print("✨ Sync complete!")
+          EOF
