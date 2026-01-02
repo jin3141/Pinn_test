@@ -9,7 +9,7 @@ from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
 
-def solve_burgers_fdm(x_range, t_range, nx=256, nt=100, nu=0.01/np.pi, method='implicit'):
+def solve_burgers_fdm(x_range, t_range, nx=256, nt=100, nu=0.01/np.pi, method='scipy'):
     """
     有限差分法でBurgers方程式を解く
 
@@ -44,7 +44,27 @@ def solve_burgers_fdm(x_range, t_range, nx=256, nt=100, nu=0.01/np.pi, method='i
     u[:, 0] = 0
     u[:, -1] = 0
 
-    if method == 'explicit':
+    if method == 'scipy':
+        # SciPy ODE solverを使用（最も安定）
+        from scipy.integrate import solve_ivp
+
+        def burgers_rhs(t_val, u_vec):
+            """Burgers方程式の右辺"""
+            dudt = np.zeros_like(u_vec)
+            for i in range(1, nx-1):
+                u_x = (u_vec[i+1] - u_vec[i-1]) / (2 * dx)
+                u_xx = (u_vec[i+1] - 2*u_vec[i] + u_vec[i-1]) / (dx**2)
+                dudt[i] = -u_vec[i] * u_x + nu * u_xx
+            dudt[0] = 0.0
+            dudt[-1] = 0.0
+            return dudt
+
+        t_eval = t
+        sol = solve_ivp(burgers_rhs, [t_min, t_max], u[0, :], t_eval=t_eval, method='BDF', rtol=1e-6, atol=1e-8)
+        u = sol.y.T
+        return x, sol.t, u
+
+    elif method == 'explicit':
         # 陽解法（Forward Time, Central Space）
         # 安定性条件が厳しいので注意
         alpha = nu * dt / dx**2
@@ -90,47 +110,45 @@ def solve_implicit_step(u_old, dx, dt, nu, nx):
     """
     Crank-Nicolson法で1ステップ進める（線形化版）
     """
-    alpha = nu * dt / (2 * dx**2)
-    beta = dt / (4 * dx)
+    # 係数
+    alpha = nu * dt / (dx**2)
+    beta = dt / (2 * dx)
 
-    # 係数行列の構築
-    # u^{n+1}_i - α(u^{n+1}_{i+1} - 2u^{n+1}_i + u^{n+1}_{i-1})
-    # - β*u^n_i*(u^{n+1}_{i+1} - u^{n+1}_{i-1})
-    # = u^n_i + α(u^n_{i+1} - 2u^n_i + u^n_{i-1})
-    #   + β*u^n_i*(u^n_{i+1} - u^n_{i-1})
+    # 係数行列の構築 (陰的Crank-Nicolson)
+    # (1 + α)u^{n+1}_i - α/2(u^{n+1}_{i+1} + u^{n+1}_{i-1}) - β/2*u^n_i*(u^{n+1}_{i+1} - u^{n+1}_{i-1})
+    # = (1 - α)u^n_i + α/2(u^n_{i+1} + u^n_{i-1}) + β/2*u^n_i*(u^n_{i+1} - u^n_{i-1})
 
-    # 左辺の係数行列（陰的部分）
-    main_diag = np.ones(nx)
+    # 三重対角行列の要素
+    main_diag = np.ones(nx) * (1.0 + alpha)
     upper_diag = np.zeros(nx - 1)
     lower_diag = np.zeros(nx - 1)
 
+    # 右辺ベクトル
+    b = np.zeros(nx)
+
     for i in range(1, nx - 1):
-        main_diag[i] = 1 + 2 * alpha
-        upper_diag[i] = -alpha - beta * u_old[i]
-        if i > 0:
-            lower_diag[i-1] = -alpha + beta * u_old[i]
+        # 左辺（陰的部分）の係数
+        lower_diag[i-1] = -alpha / 2.0 + beta / 2.0 * u_old[i]
+        upper_diag[i] = -alpha / 2.0 - beta / 2.0 * u_old[i]
+
+        # 右辺（陽的部分）
+        b[i] = (1.0 - alpha) * u_old[i] + \
+               (alpha / 2.0) * (u_old[i+1] + u_old[i-1]) + \
+               (beta / 2.0) * u_old[i] * (u_old[i+1] - u_old[i-1])
 
     # 境界条件
-    main_diag[0] = 1
-    main_diag[-1] = 1
+    main_diag[0] = 1.0
+    main_diag[-1] = 1.0
+    b[0] = 0.0
+    b[-1] = 0.0
+
     if nx > 1:
-        upper_diag[0] = 0
-        lower_diag[-1] = 0
+        upper_diag[0] = 0.0
+    if nx > 1:
+        lower_diag[-1] = 0.0
 
     # 三重対角行列
     A = sparse.diags([lower_diag, main_diag, upper_diag], [-1, 0, 1], format='csr')
-
-    # 右辺の計算（陽的部分）
-    b = u_old.copy()
-    for i in range(1, nx - 1):
-        u_xx = (u_old[i+1] - 2 * u_old[i] + u_old[i-1]) / dx**2
-        u_x = (u_old[i+1] - u_old[i-1]) / (2 * dx)
-        b[i] = u_old[i] + alpha * (u_old[i+1] - 2 * u_old[i] + u_old[i-1]) \
-               + beta * u_old[i] * (u_old[i+1] - u_old[i-1])
-
-    # 境界条件
-    b[0] = 0
-    b[-1] = 0
 
     # 線形システムを解く
     u_new = spsolve(A, b)
@@ -187,7 +205,9 @@ def solve_burgers_analytical(x_range, t_range, nx=256, nt=100, nu=0.01/np.pi):
                     """φの積分"""
                     G = 1.0 / np.sqrt(4 * np.pi * nu * t_val) * \
                         np.exp(-(x_val - y)**2 / (4 * nu * t_val))
-                    phi0 = np.exp(np.cos(np.pi * y) / (2 * nu * np.pi))
+                    # u0(y) = -sin(πy) なので、∫ u0(s)/(2ν) ds = (cos(πy) - 1)/(2νπ)
+                    # より安定な計算のため、exp((cos(πy) - 1)/(2νπ)) を使用
+                    phi0 = np.exp((np.cos(np.pi * y) - 1.0) / (2 * nu * np.pi))
                     return G * phi0
 
                 def integrand_dphi(y):
@@ -195,7 +215,8 @@ def solve_burgers_analytical(x_range, t_range, nx=256, nt=100, nu=0.01/np.pi):
                     G = 1.0 / np.sqrt(4 * np.pi * nu * t_val) * \
                         np.exp(-(x_val - y)**2 / (4 * nu * t_val))
                     dG_dx = -(x_val - y) / (2 * nu * t_val) * G
-                    phi0 = np.exp(np.cos(np.pi * y) / (2 * nu * np.pi))
+                    # u0(y) = -sin(πy) より φ0 を計算
+                    phi0 = np.exp((np.cos(np.pi * y) - 1.0) / (2 * nu * np.pi))
                     return dG_dx * phi0
 
                 # 数値積分で計算（積分範囲を [-3, 3] 程度に制限して効率化）
