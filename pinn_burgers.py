@@ -153,15 +153,16 @@ class BurgersPINN(nn.Module):
 
         return loss.item(), loss_bc.item(), loss_ic.item(), loss_pde.item()
 
-    def train(self, x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f,
-              epochs=10000, print_every=1000):
+    def fit(self, x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f,
+            epochs=10000, print_every=1000):
         """
         モデルを訓練
         """
         print("Training PINN model...")
         start_time = time.time()
 
-        self.train_mode = True
+        # 訓練モードに設定
+        super().train()
 
         for epoch in range(epochs):
             loss, loss_bc, loss_ic, loss_pde = self.train_step(
@@ -178,6 +179,7 @@ class BurgersPINN(nn.Module):
 
         print(f"Training completed in {time.time() - start_time:.2f}s")
 
+        # 評価モードに設定
         self.eval()
 
     def predict(self, x, t):

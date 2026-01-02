@@ -111,7 +111,7 @@ else:
 
         for epoch in range(0, epochs, max(1, epochs // 10)):
             remaining_epochs = min(max(1, epochs // 10), epochs - epoch)
-            pinn.train(
+            pinn.fit(
                 x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f,
                 epochs=remaining_epochs,
                 print_every=max(1, remaining_epochs // 2)
