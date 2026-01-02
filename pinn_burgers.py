@@ -1,19 +1,18 @@
 """
-PINN (Physics-Informed Neural Network) for Burgers Equation
+PINN (Physics-Informed Neural Network) for Burgers Equation - PyTorch版
 
 Burgers方程式: ∂u/∂t + u * ∂u/∂x = ν * ∂²u/∂x²
 """
 
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+import torch
+import torch.nn as nn
 import time
 
 
-class BurgersPINN:
+class BurgersPINN(nn.Module):
     """
-    Physics-Informed Neural Network for Burgers Equation
+    Physics-Informed Neural Network for Burgers Equation (PyTorch実装)
     """
 
     def __init__(self, layers_dims=[2, 50, 50, 50, 1], nu=0.01/np.pi, lr=0.001):
@@ -23,94 +22,136 @@ class BurgersPINN:
             nu: 粘性係数
             lr: 学習率
         """
+        super(BurgersPINN, self).__init__()
+
         self.nu = nu
         self.layers_dims = layers_dims
-        self.model = self._build_model()
-        self.optimizer = keras.optimizers.Adam(learning_rate=lr)
+
+        # ニューラルネットワークの構築
+        layers = []
+        for i in range(len(layers_dims) - 1):
+            layers.append(nn.Linear(layers_dims[i], layers_dims[i+1]))
+            if i < len(layers_dims) - 2:  # 最終層以外は活性化関数を追加
+                layers.append(nn.Tanh())
+
+        self.network = nn.Sequential(*layers)
+
+        # パラメータの初期化（Xavier/Glorot）
+        self._initialize_weights()
+
+        # オプティマイザ
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
+        # 損失履歴
         self.loss_history = []
 
-    def _build_model(self):
-        """ニューラルネットワークモデルを構築"""
-        inputs = keras.Input(shape=(2,))  # [x, t]
-        x = inputs
+        # デバイス設定（CPUを使用）
+        self.device = torch.device('cpu')
+        self.to(self.device)
 
-        # 隠れ層
-        for units in self.layers_dims[1:-1]:
-            x = layers.Dense(units, activation='tanh',
-                           kernel_initializer='glorot_normal')(x)
+    def _initialize_weights(self):
+        """重みの初期化（Xavier/Glorot）"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-        # 出力層
-        outputs = layers.Dense(self.layers_dims[-1],
-                             kernel_initializer='glorot_normal')(x)
+    def forward(self, x, t):
+        """
+        順伝播
+        Args:
+            x: 空間座標 [N, 1]
+            t: 時間座標 [N, 1]
+        Returns:
+            u: 解 [N, 1]
+        """
+        xt = torch.cat([x, t], dim=1)
+        return self.network(xt)
 
-        model = keras.Model(inputs=inputs, outputs=outputs)
-        return model
-
-    def predict_u(self, x, t):
-        """u(x,t)を予測"""
-        xt = tf.concat([x, t], axis=1)
-        return self.model(xt)
-
-    def compute_residual(self, x, t):
+    def compute_pde_residual(self, x, t):
         """
         物理法則の残差を計算
         Burgers方程式: ∂u/∂t + u * ∂u/∂x - ν * ∂²u/∂x² = 0
+
+        Args:
+            x: 空間座標 [N, 1]
+            t: 時間座標 [N, 1]
+        Returns:
+            residual: PDE残差 [N, 1]
         """
-        with tf.GradientTape(persistent=True) as tape2:
-            tape2.watch([x, t])
-            with tf.GradientTape(persistent=True) as tape1:
-                tape1.watch([x, t])
-                u = self.predict_u(x, t)
+        # 勾配計算を有効化
+        x = x.clone().detach().requires_grad_(True)
+        t = t.clone().detach().requires_grad_(True)
 
-            u_x = tape1.gradient(u, x)
-            u_t = tape1.gradient(u, t)
+        # u(x,t)を計算
+        u = self.forward(x, t)
 
-        u_xx = tape2.gradient(u_x, x)
+        # 1階微分: ∂u/∂x, ∂u/∂t
+        u_x = torch.autograd.grad(
+            outputs=u, inputs=x,
+            grad_outputs=torch.ones_like(u),
+            create_graph=True, retain_graph=True
+        )[0]
 
-        del tape1, tape2
+        u_t = torch.autograd.grad(
+            outputs=u, inputs=t,
+            grad_outputs=torch.ones_like(u),
+            create_graph=True, retain_graph=True
+        )[0]
+
+        # 2階微分: ∂²u/∂x²
+        u_xx = torch.autograd.grad(
+            outputs=u_x, inputs=x,
+            grad_outputs=torch.ones_like(u_x),
+            create_graph=True, retain_graph=True
+        )[0]
 
         # Burgers方程式の残差
         residual = u_t + u * u_x - self.nu * u_xx
+
         return residual
 
-    @tf.function
     def compute_loss(self, x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f):
         """
         損失関数を計算
+
         Args:
             x_bc, t_bc, u_bc: 境界条件のデータ
             x_ic, t_ic, u_ic: 初期条件のデータ
             x_f, t_f: コロケーションポイント（物理法則を満たすべき点）
+        Returns:
+            total_loss, loss_bc, loss_ic, loss_pde
         """
         # 境界条件の損失
-        u_bc_pred = self.predict_u(x_bc, t_bc)
-        loss_bc = tf.reduce_mean(tf.square(u_bc_pred - u_bc))
+        u_bc_pred = self.forward(x_bc, t_bc)
+        loss_bc = torch.mean((u_bc_pred - u_bc) ** 2)
 
         # 初期条件の損失
-        u_ic_pred = self.predict_u(x_ic, t_ic)
-        loss_ic = tf.reduce_mean(tf.square(u_ic_pred - u_ic))
+        u_ic_pred = self.forward(x_ic, t_ic)
+        loss_ic = torch.mean((u_ic_pred - u_ic) ** 2)
 
         # 物理法則（PDE）の損失
-        residual = self.compute_residual(x_f, t_f)
-        loss_pde = tf.reduce_mean(tf.square(residual))
+        residual = self.compute_pde_residual(x_f, t_f)
+        loss_pde = torch.mean(residual ** 2)
 
         # 総損失
         total_loss = loss_bc + loss_ic + loss_pde
 
         return total_loss, loss_bc, loss_ic, loss_pde
 
-    @tf.function
     def train_step(self, x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f):
         """1ステップの訓練"""
-        with tf.GradientTape() as tape:
-            loss, loss_bc, loss_ic, loss_pde = self.compute_loss(
-                x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f
-            )
+        self.optimizer.zero_grad()
 
-        gradients = tape.gradient(loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        loss, loss_bc, loss_ic, loss_pde = self.compute_loss(
+            x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f
+        )
 
-        return loss, loss_bc, loss_ic, loss_pde
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item(), loss_bc.item(), loss_ic.item(), loss_pde.item()
 
     def train(self, x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f,
               epochs=10000, print_every=1000):
@@ -120,32 +161,54 @@ class BurgersPINN:
         print("Training PINN model...")
         start_time = time.time()
 
+        self.train_mode = True
+
         for epoch in range(epochs):
             loss, loss_bc, loss_ic, loss_pde = self.train_step(
                 x_bc, t_bc, u_bc, x_ic, t_ic, u_ic, x_f, t_f
             )
 
-            self.loss_history.append(loss.numpy())
+            self.loss_history.append(loss)
 
             if epoch % print_every == 0:
                 elapsed = time.time() - start_time
-                print(f"Epoch {epoch}/{epochs}, Loss: {loss.numpy():.6f}, "
-                      f"BC: {loss_bc.numpy():.6f}, IC: {loss_ic.numpy():.6f}, "
-                      f"PDE: {loss_pde.numpy():.6f}, Time: {elapsed:.2f}s")
+                print(f"Epoch {epoch}/{epochs}, Loss: {loss:.6f}, "
+                      f"BC: {loss_bc:.6f}, IC: {loss_ic:.6f}, "
+                      f"PDE: {loss_pde:.6f}, Time: {elapsed:.2f}s")
 
         print(f"Training completed in {time.time() - start_time:.2f}s")
 
+        self.eval()
+
     def predict(self, x, t):
-        """予測を実行（NumPy配列で）"""
-        x_tf = tf.convert_to_tensor(x, dtype=tf.float32)
-        t_tf = tf.convert_to_tensor(t, dtype=tf.float32)
-        u_pred = self.predict_u(x_tf, t_tf)
-        return u_pred.numpy()
+        """
+        予測を実行（NumPy配列で入出力）
+
+        Args:
+            x: 空間座標 [N, 1] (numpy array)
+            t: 時間座標 [N, 1] (numpy array)
+        Returns:
+            u: 解 [N, 1] (numpy array)
+        """
+        self.eval()
+
+        with torch.no_grad():
+            # NumPy → Tensor
+            x_tensor = torch.from_numpy(x).float().to(self.device)
+            t_tensor = torch.from_numpy(t).float().to(self.device)
+
+            # 予測
+            u_tensor = self.forward(x_tensor, t_tensor)
+
+            # Tensor → NumPy
+            u_pred = u_tensor.cpu().numpy()
+
+        return u_pred
 
 
 def generate_training_data(x_range, t_range, n_bc=100, n_ic=256, n_f=10000):
     """
-    訓練データを生成
+    訓練データを生成（PyTorchテンソルとして）
 
     Args:
         x_range: [x_min, x_max]
@@ -155,7 +218,7 @@ def generate_training_data(x_range, t_range, n_bc=100, n_ic=256, n_f=10000):
         n_f: コロケーションポイント数
 
     Returns:
-        境界条件、初期条件、コロケーションポイントのデータ
+        境界条件、初期条件、コロケーションポイントのデータ（PyTorchテンソル）
     """
     x_min, x_max = x_range
     t_min, t_max = t_range
@@ -177,28 +240,16 @@ def generate_training_data(x_range, t_range, n_bc=100, n_ic=256, n_f=10000):
     x_f = np.random.uniform(x_min, x_max, (n_f, 1)).astype(np.float32)
     t_f = np.random.uniform(t_min, t_max, (n_f, 1)).astype(np.float32)
 
-    # TensorFlowテンソルに変換
-    x_bc = tf.convert_to_tensor(x_bc)
-    t_bc = tf.convert_to_tensor(t_bc)
-    u_bc = tf.convert_to_tensor(u_bc)
+    # NumPy → PyTorchテンソルに変換
+    x_bc = torch.from_numpy(x_bc).float()
+    t_bc = torch.from_numpy(t_bc).float()
+    u_bc = torch.from_numpy(u_bc).float()
 
-    x_ic = tf.convert_to_tensor(x_ic)
-    t_ic = tf.convert_to_tensor(t_ic)
-    u_ic = tf.convert_to_tensor(u_ic)
+    x_ic = torch.from_numpy(x_ic).float()
+    t_ic = torch.from_numpy(t_ic).float()
+    u_ic = torch.from_numpy(u_ic).float()
 
-    x_f = tf.convert_to_tensor(x_f)
-    t_f = tf.convert_to_tensor(t_f)
+    x_f = torch.from_numpy(x_f).float()
+    t_f = torch.from_numpy(t_f).float()
 
     return (x_bc, t_bc, u_bc), (x_ic, t_ic, u_ic), (x_f, t_f)
-
-
-def burgers_analytical(x, t, nu=0.01/np.pi):
-    """
-    Burgers方程式の解析解（存在する場合）
-    初期条件: u(x,0) = -sin(πx)
-    境界条件: u(-1,t) = u(1,t) = 0
-
-    Note: 完全な解析解は複雑なので、ここでは数値解を返します
-    """
-    # この問題の正確な解析解は複雑なので、数値解法を別途使用します
-    pass

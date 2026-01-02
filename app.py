@@ -5,7 +5,6 @@ Burgers方程式を解くPINNアプリケーション（Streamlit）
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import tensorflow as tf
 from pinn_burgers import BurgersPINN, generate_training_data
 from numerical_solver import solve_burgers_fdm, solve_burgers_analytical, compute_error_metrics
 import time
