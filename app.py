@@ -10,13 +10,132 @@ from numerical_solver import solve_burgers_fdm, solve_burgers_analytical, comput
 import time
 
 # ページ設定
-st.set_page_config(page_title="PINN Burgers Equation Solver", layout="wide")
+st.set_page_config(
+    page_title="PINN Burgers Equation Solver",
+    layout="centered",  # モバイル対応のため centered に変更
+    initial_sidebar_state="auto"
+)
 
-st.title("🌊 PINN による Burgers方程式ソルバー")
+# モバイル対応のカスタムCSS
+st.markdown("""
+<style>
+    /* モバイル対応 */
+    @media (max-width: 768px) {
+        /* メインコンテンツエリア */
+        .main .block-container {
+            padding-top: 1rem;
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
+            padding-bottom: 3rem;
+            max-width: 100%;
+        }
+
+        /* サイドバーのスクロール改善 */
+        section[data-testid="stSidebar"] {
+            z-index: 999;
+        }
+
+        section[data-testid="stSidebar"] > div {
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            max-height: 100vh;
+        }
+
+        /* ボタンのサイズを大きく（タップしやすく） */
+        .stButton > button {
+            width: 100%;
+            min-height: 3.5rem;
+            font-size: 1.3rem;
+            padding: 1rem;
+        }
+
+        /* タブのサイズ調整 */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.5rem;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            font-size: 0.9rem;
+            padding: 0.5rem 0.8rem;
+            white-space: nowrap;
+        }
+
+        /* 画像とプロットのサイズ調整 */
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* テキストのサイズ調整 */
+        h1 {
+            font-size: 1.8rem;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+        }
+
+        h3 {
+            font-size: 1.2rem;
+        }
+    }
+
+    /* タブレット対応 */
+    @media (min-width: 769px) and (max-width: 1024px) {
+        .main .block-container {
+            max-width: 95%;
+        }
+    }
+
+    /* 全デバイス共通 */
+    .stButton > button {
+        background-color: #FF4B4B;
+        color: white;
+        border-radius: 8px;
+        font-weight: bold;
+        transition: all 0.3s ease;
+    }
+
+    .stButton > button:hover {
+        background-color: #FF6B6B;
+        transform: scale(1.02);
+    }
+
+    .stButton > button:active {
+        transform: scale(0.98);
+    }
+
+    /* スクロールバーのスタイル */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: #555;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🌊 PINN Burgers方程式")
 st.write("Physics-Informed Neural Networks (PINN) でBurgers方程式を解きます")
 
+# モバイルユーザー向けヒント
+st.info("💡 **スマホの方**: サイドバーを開いてパラメータを調整できます（画面左上の「>」をタップ）")
+
 # Burgers方程式の説明
-with st.expander("📚 Burgers方程式について"):
+with st.expander("📚 Burgers方程式について", expanded=False):
     st.latex(r"\frac{\partial u}{\partial t} + u \frac{\partial u}{\partial x} = \nu \frac{\partial^2 u}{\partial x^2}")
     st.write("""
     - **u**: 速度場
@@ -31,45 +150,95 @@ with st.expander("📚 Burgers方程式について"):
 
 # サイドバーでパラメータ設定
 st.sidebar.header("⚙️ パラメータ設定")
+st.sidebar.info("💡 スマホの方: パラメータ変更後、メインページに戻って「訓練開始」ボタンを押してください")
+
+# クイック設定
+with st.sidebar.expander("⚡ クイック設定", expanded=True):
+    quick_mode = st.radio(
+        "計算モード",
+        ["🚀 高速（テスト用）", "⚖️ 標準", "🎯 高精度"],
+        index=1,
+        help="計算速度と精度のバランスを選択"
+    )
+
+# クイック設定に応じたパラメータ
+if quick_mode == "🚀 高速（テスト用）":
+    default_epochs = 1000
+    default_nx = 100
+    default_nt = 50
+    default_collocation = 5000
+elif quick_mode == "🎯 高精度":
+    default_epochs = 10000
+    default_nx = 300
+    default_nt = 150
+    default_collocation = 15000
+else:  # 標準
+    default_epochs = 5000
+    default_nx = 200
+    default_nt = 100
+    default_collocation = 10000
 
 # 物理パラメータ
-nu = st.sidebar.number_input("粘性係数 ν", min_value=0.001, max_value=0.1,
-                             value=0.01/np.pi, format="%.6f")
-
-# 領域設定
-x_min = st.sidebar.number_input("x の最小値", value=-1.0)
-x_max = st.sidebar.number_input("x の最大値", value=1.0)
-t_min = st.sidebar.number_input("t の最小値", value=0.0)
-t_max = st.sidebar.number_input("t の最大値", value=1.0)
+with st.sidebar.expander("🔬 物理パラメータ", expanded=False):
+    nu = st.number_input("粘性係数 ν", min_value=0.001, max_value=0.1,
+                         value=0.01/np.pi, format="%.6f")
+    st.markdown("---")
+    x_min = st.number_input("x の最小値", value=-1.0)
+    x_max = st.number_input("x の最大値", value=1.0)
+    t_min = st.number_input("t の最小値", value=0.0)
+    t_max = st.number_input("t の最大値", value=1.0)
 
 # PINN設定
-st.sidebar.subheader("PINN設定")
-epochs = st.sidebar.slider("エポック数", 100, 20000, 5000, 100)
-learning_rate = st.sidebar.select_slider(
-    "学習率",
-    options=[0.0001, 0.0005, 0.001, 0.005, 0.01],
-    value=0.001
-)
-n_collocation = st.sidebar.slider("コロケーションポイント数", 1000, 20000, 10000, 1000)
+with st.sidebar.expander("🧠 PINN設定", expanded=False):
+    epochs = st.slider("エポック数", 100, 20000, default_epochs, 100)
+    learning_rate = st.select_slider(
+        "学習率",
+        options=[0.0001, 0.0005, 0.001, 0.005, 0.01],
+        value=0.001
+    )
+    n_collocation = st.slider("コロケーションポイント数", 1000, 20000, default_collocation, 1000)
 
 # 数値解法設定
-st.sidebar.subheader("数値解法設定")
-nx_fdm = st.sidebar.slider("空間グリッド数", 50, 500, 256, 10)
-nt_fdm = st.sidebar.slider("時間グリッド数", 50, 500, 100, 10)
+with st.sidebar.expander("🔢 数値解法設定", expanded=False):
+    nx_fdm = st.slider("空間グリッド数", 50, 500, default_nx, 10)
+    nt_fdm = st.slider("時間グリッド数", 50, 500, default_nt, 10)
 
 # 解析解設定
-st.sidebar.subheader("解析解設定")
-compute_analytical = st.sidebar.checkbox("解析解を計算する", value=True)
-nx_analytical = st.sidebar.slider("解析解の空間グリッド数", 30, 200, 100, 10) if compute_analytical else 100
-nt_analytical = st.sidebar.slider("解析解の時間グリッド数", 20, 100, 50, 10) if compute_analytical else 50
+with st.sidebar.expander("✨ 解析解設定", expanded=False):
+    compute_analytical = st.checkbox("解析解を計算する", value=True)
+    if compute_analytical:
+        nx_analytical = st.slider("解析解の空間グリッド数", 30, 200, 100, 10)
+        nt_analytical = st.slider("解析解の時間グリッド数", 20, 100, 50, 10)
+    else:
+        nx_analytical = 100
+        nt_analytical = 50
 
-# 訓練開始ボタン
-if st.sidebar.button("🚀 訓練開始", type="primary"):
+# メインエリアの訓練開始ボタン（モバイル対応）
+st.markdown("---")
+st.markdown("### 🚀 計算を開始")
+st.write("下のボタンをクリックして、PINNの訓練と解の計算を開始します。")
+col1, col2, col3 = st.columns([1, 3, 1])
+with col2:
+    main_start_button = st.button(
+        "🚀 訓練開始",
+        type="primary",
+        key="main_button",
+        use_container_width=True,
+        help="PINNの訓練と数値解法・解析解の計算を開始します"
+    )
+
+# サイドバーの訓練開始ボタン（デスクトップ用）
+sidebar_start_button = st.sidebar.button("🚀 訓練開始", type="primary", key="sidebar_button")
+
+# どちらかのボタンが押されたら訓練開始
+if main_start_button or sidebar_start_button:
     st.session_state.training = True
+
+st.markdown("---")
 
 # メインエリア
 if 'training' not in st.session_state:
-    st.info("👈 左のサイドバーでパラメータを設定し、「訓練開始」ボタンを押してください")
+    st.info("⬆️ 上の「訓練開始」ボタンを押すか、左のサイドバーでパラメータを調整してください")
 else:
     # タブの作成
     if compute_analytical:
