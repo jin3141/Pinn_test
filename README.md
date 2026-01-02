@@ -1,3 +1,15 @@
+---
+title: PINN Burgers Equation Solver
+emoji: 🌊
+colorFrom: blue
+colorTo: purple
+sdk: streamlit
+sdk_version: "1.28.0"
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # PINN Burgers方程式ソルバー
 
 Physics-Informed Neural Networks (PINN) を使ってBurgers方程式を解くStreamlitアプリケーション
@@ -47,11 +59,13 @@ streamlit run app.py
 
 2. 「訓練開始」ボタンをクリック
 
-3. 結果を4つのタブで確認
-   - **結果比較**: PINNと数値解法の比較
+3. 結果を確認
+   - **3手法比較**: PINN、FDM、解析解の比較
+   - **解析解**: Cole-Hopf変換による厳密解
    - **PINN結果**: 訓練履歴と解の可視化
    - **数値解法結果**: 有限差分法の結果
-   - **誤差分析**: 詳細な誤差統計
+   - **誤差分析**: 解析解との詳細な誤差統計
+   - **詳細比較**: どの手法が最も正確かを判定
 
 ## ファイル構成
 
@@ -74,12 +88,43 @@ PINNの損失関数は以下の3つの項から構成されます：
 
 ## デプロイ
 
+### Hugging Face Spacesへのデプロイ（推奨）
+
+無料枠が比較的寛大で、機械学習アプリに最適です。
+
+#### 方法1: GitHubから直接デプロイ
+
+1. [Hugging Face](https://huggingface.co/)でアカウント作成（無料）
+2. [新しいSpaceを作成](https://huggingface.co/new-space)
+   - Space name: 任意の名前（例: `pinn-burgers-solver`）
+   - License: MIT
+   - Select the SDK: **Streamlit**
+   - Space hardware: **CPU basic** (無料)
+3. 「Create Space」をクリック
+4. 作成されたSpaceで「Files」タブ → 「Add file」 → 「Upload files」
+5. 以下のファイルをアップロード：
+   - `app.py`
+   - `pinn_burgers.py`
+   - `numerical_solver.py`
+   - `requirements.txt`
+   - `README.md`
+6. 数分待つと自動的にデプロイされます
+
+#### 方法2: Gitリポジトリから同期（自動更新）
+
+1. Hugging Face Spaceを作成（方法1の手順1-3）
+2. Space設定で「Settings」→「Sync with GitHub」
+3. GitHubリポジトリを接続
+4. 今後GitHubにpushすると自動的に更新されます
+
 ### Streamlit Community Cloudへのデプロイ
 
 1. GitHubリポジトリにコードをプッシュ
 2. [Streamlit Community Cloud](https://streamlit.io/cloud)にアクセス
 3. GitHubリポジトリを接続
 4. `app.py`を指定してデプロイ
+
+**注意**: Streamlit Cloudは無料枠の制限が厳しいため、Hugging Face Spacesの利用を推奨します。
 
 ## 参考文献
 
