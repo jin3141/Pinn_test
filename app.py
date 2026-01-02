@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from pinn_burgers import BurgersPINN, generate_training_data
-from numerical_solver import solve_burgers_fdm, compute_error_metrics
+from numerical_solver import solve_burgers_fdm, solve_burgers_analytical, compute_error_metrics
 import time
 
 # ページ設定
@@ -58,6 +58,12 @@ st.sidebar.subheader("数値解法設定")
 nx_fdm = st.sidebar.slider("空間グリッド数", 50, 500, 256, 10)
 nt_fdm = st.sidebar.slider("時間グリッド数", 50, 500, 100, 10)
 
+# 解析解設定
+st.sidebar.subheader("解析解設定")
+compute_analytical = st.sidebar.checkbox("解析解を計算する", value=True)
+nx_analytical = st.sidebar.slider("解析解の空間グリッド数", 30, 200, 100, 10) if compute_analytical else 100
+nt_analytical = st.sidebar.slider("解析解の時間グリッド数", 20, 100, 50, 10) if compute_analytical else 50
+
 # 訓練開始ボタン
 if st.sidebar.button("🚀 訓練開始", type="primary"):
     st.session_state.training = True
@@ -67,7 +73,12 @@ if 'training' not in st.session_state:
     st.info("👈 左のサイドバーでパラメータを設定し、「訓練開始」ボタンを押してください")
 else:
     # タブの作成
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 結果比較", "🧠 PINN結果", "🔢 数値解法結果", "📈 誤差分析"])
+    if compute_analytical:
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📊 3手法比較", "✨ 解析解", "🧠 PINN結果", "🔢 数値解法結果", "📈 誤差分析", "📉 詳細比較"
+        ])
+    else:
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 結果比較", "🧠 PINN結果", "🔢 数値解法結果", "📈 誤差分析"])
 
     with st.spinner("モデルを訓練中..."):
         # データ生成
@@ -128,7 +139,22 @@ else:
             method='implicit'
         )
 
-        progress_bar.progress(90)
+        progress_bar.progress(80)
+
+        # 解析解を計算
+        u_analytical = None
+        x_analytical = None
+        t_analytical = None
+        if compute_analytical:
+            status_text.text("解析解を計算中（Cole-Hopf変換）...")
+            x_analytical, t_analytical, u_analytical = solve_burgers_analytical(
+                x_range=[x_min, x_max],
+                t_range=[t_min, t_max],
+                nx=nx_analytical,
+                nt=nt_analytical,
+                nu=nu
+            )
+            progress_bar.progress(85)
 
         # PINNで予測
         status_text.text("PINNで予測中...")
@@ -139,74 +165,208 @@ else:
         u_pinn_flat = pinn.predict(x_flat, t_flat)
         u_pinn = u_pinn_flat.reshape(X_grid.shape)
 
+        progress_bar.progress(95)
+
+        # 誤差計算
+        errors_vs_fdm = compute_error_metrics(u_pinn, u_fdm)
+
+        # 解析解との誤差計算（同じグリッドで比較）
+        errors_pinn_vs_analytical = None
+        errors_fdm_vs_analytical = None
+        if compute_analytical:
+            # 解析解のグリッドでPINNとFDMを評価
+            X_ana, T_ana = np.meshgrid(x_analytical, t_analytical)
+            x_ana_flat = X_ana.flatten()[:, None].astype(np.float32)
+            t_ana_flat = T_ana.flatten()[:, None].astype(np.float32)
+
+            u_pinn_ana = pinn.predict(x_ana_flat, t_ana_flat).reshape(X_ana.shape)
+
+            # FDMの結果を解析解のグリッドに補間
+            from scipy.interpolate import RectBivariateSpline
+            fdm_interp = RectBivariateSpline(t_fdm, x_fdm, u_fdm)
+            u_fdm_ana = fdm_interp(t_analytical, x_analytical)
+
+            errors_pinn_vs_analytical = compute_error_metrics(u_pinn_ana, u_analytical)
+            errors_fdm_vs_analytical = compute_error_metrics(u_fdm_ana, u_analytical)
+
         progress_bar.progress(100)
         status_text.text("完了！")
 
-        # 誤差計算
-        errors = compute_error_metrics(u_pinn, u_fdm)
-
     # 結果の表示
     with tab1:
-        st.header("結果比較")
+        if compute_analytical:
+            st.header("3手法の比較（PINN vs FDM vs 解析解）")
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("L2相対誤差", f"{errors['L2_relative_error']:.6f}")
-        col2.metric("最大絶対誤差", f"{errors['max_absolute_error']:.6f}")
-        col3.metric("平均絶対誤差", f"{errors['mean_absolute_error']:.6f}")
+            # 解析解との誤差比較
+            st.subheader("📊 解析解との誤差比較")
+            col1, col2 = st.columns(2)
 
-        # 特定の時刻での比較
-        st.subheader("特定の時刻での比較")
-        time_idx = st.slider("時刻インデックス", 0, len(t_fdm)-1, len(t_fdm)//2)
-        selected_time = t_fdm[time_idx]
+            with col1:
+                st.write("**PINN vs 解析解**")
+                st.metric("L2相対誤差", f"{errors_pinn_vs_analytical['L2_relative_error']:.6f}")
+                st.metric("最大絶対誤差", f"{errors_pinn_vs_analytical['max_absolute_error']:.6f}")
+                st.metric("平均絶対誤差", f"{errors_pinn_vs_analytical['mean_absolute_error']:.6f}")
 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(x_fdm, u_fdm[time_idx, :], 'b-', label='数値解法 (FDM)', linewidth=2)
-        ax.plot(x_fdm, u_pinn[time_idx, :], 'r--', label='PINN', linewidth=2)
-        ax.set_xlabel('x', fontsize=12)
-        ax.set_ylabel('u', fontsize=12)
-        ax.set_title(f't = {selected_time:.3f} での比較', fontsize=14)
-        ax.legend(fontsize=11)
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+            with col2:
+                st.write("**FDM vs 解析解**")
+                st.metric("L2相対誤差", f"{errors_fdm_vs_analytical['L2_relative_error']:.6f}")
+                st.metric("最大絶対誤差", f"{errors_fdm_vs_analytical['max_absolute_error']:.6f}")
+                st.metric("平均絶対誤差", f"{errors_fdm_vs_analytical['mean_absolute_error']:.6f}")
 
-        # ヒートマップ比較
-        st.subheader("時空間での解の分布")
+            # 特定の時刻での3手法比較
+            st.subheader("特定の時刻での3手法比較")
+            time_idx_ana = st.slider("時刻インデックス", 0, len(t_analytical)-1, len(t_analytical)//2, key="time_idx_ana")
+            selected_time_ana = t_analytical[time_idx_ana]
 
-        col1, col2, col3 = st.columns(3)
+            # 対応するFDMの時刻インデックスを見つける
+            fdm_time_idx = np.argmin(np.abs(t_fdm - selected_time_ana))
 
-        with col1:
-            st.write("**PINN**")
-            fig1, ax1 = plt.subplots(figsize=(6, 5))
-            im1 = ax1.contourf(X_grid, T_grid, u_pinn, levels=50, cmap='viridis')
-            ax1.set_xlabel('x')
-            ax1.set_ylabel('t')
-            ax1.set_title('PINN Solution')
-            plt.colorbar(im1, ax=ax1)
-            st.pyplot(fig1)
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(x_analytical, u_analytical[time_idx_ana, :], 'k-', label='解析解', linewidth=2.5, alpha=0.8)
+            ax.plot(x_fdm, u_fdm[fdm_time_idx, :], 'b--', label='数値解法 (FDM)', linewidth=2)
+            ax.plot(x_analytical, u_pinn_ana[time_idx_ana, :], 'r:', label='PINN', linewidth=2)
+            ax.set_xlabel('x', fontsize=12)
+            ax.set_ylabel('u', fontsize=12)
+            ax.set_title(f't = {selected_time_ana:.3f} での3手法比較', fontsize=14)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
 
-        with col2:
-            st.write("**数値解法 (FDM)**")
-            fig2, ax2 = plt.subplots(figsize=(6, 5))
-            im2 = ax2.contourf(X_grid, T_grid, u_fdm, levels=50, cmap='viridis')
-            ax2.set_xlabel('x')
-            ax2.set_ylabel('t')
-            ax2.set_title('FDM Solution')
-            plt.colorbar(im2, ax=ax2)
-            st.pyplot(fig2)
+            # ヒートマップ比較
+            st.subheader("時空間での解の分布")
 
-        with col3:
-            st.write("**誤差分布**")
-            fig3, ax3 = plt.subplots(figsize=(6, 5))
-            error_map = np.abs(u_pinn - u_fdm)
-            im3 = ax3.contourf(X_grid, T_grid, error_map, levels=50, cmap='hot')
-            ax3.set_xlabel('x')
-            ax3.set_ylabel('t')
-            ax3.set_title('Absolute Error')
-            plt.colorbar(im3, ax=ax3)
-            st.pyplot(fig3)
+            col1, col2, col3 = st.columns(3)
 
-    with tab2:
-        st.header("PINN結果")
+            with col1:
+                st.write("**解析解**")
+                fig1, ax1 = plt.subplots(figsize=(6, 5))
+                X_ana, T_ana = np.meshgrid(x_analytical, t_analytical)
+                im1 = ax1.contourf(X_ana, T_ana, u_analytical, levels=50, cmap='viridis')
+                ax1.set_xlabel('x')
+                ax1.set_ylabel('t')
+                ax1.set_title('Analytical Solution')
+                plt.colorbar(im1, ax=ax1)
+                st.pyplot(fig1)
+
+            with col2:
+                st.write("**PINN**")
+                fig2, ax2 = plt.subplots(figsize=(6, 5))
+                im2 = ax2.contourf(X_ana, T_ana, u_pinn_ana, levels=50, cmap='viridis')
+                ax2.set_xlabel('x')
+                ax2.set_ylabel('t')
+                ax2.set_title('PINN Solution')
+                plt.colorbar(im2, ax=ax2)
+                st.pyplot(fig2)
+
+            with col3:
+                st.write("**FDM**")
+                fig3, ax3 = plt.subplots(figsize=(6, 5))
+                im3 = ax3.contourf(X_ana, T_ana, u_fdm_ana, levels=50, cmap='viridis')
+                ax3.set_xlabel('x')
+                ax3.set_ylabel('t')
+                ax3.set_title('FDM Solution')
+                plt.colorbar(im3, ax=ax3)
+                st.pyplot(fig3)
+
+        else:
+            st.header("結果比較（PINN vs FDM）")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("L2相対誤差", f"{errors_vs_fdm['L2_relative_error']:.6f}")
+            col2.metric("最大絶対誤差", f"{errors_vs_fdm['max_absolute_error']:.6f}")
+            col3.metric("平均絶対誤差", f"{errors_vs_fdm['mean_absolute_error']:.6f}")
+
+            # 特定の時刻での比較
+            st.subheader("特定の時刻での比較")
+            time_idx = st.slider("時刻インデックス", 0, len(t_fdm)-1, len(t_fdm)//2)
+            selected_time = t_fdm[time_idx]
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(x_fdm, u_fdm[time_idx, :], 'b-', label='数値解法 (FDM)', linewidth=2)
+            ax.plot(x_fdm, u_pinn[time_idx, :], 'r--', label='PINN', linewidth=2)
+            ax.set_xlabel('x', fontsize=12)
+            ax.set_ylabel('u', fontsize=12)
+            ax.set_title(f't = {selected_time:.3f} での比較', fontsize=14)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+
+            # ヒートマップ比較
+            st.subheader("時空間での解の分布")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.write("**PINN**")
+                fig1, ax1 = plt.subplots(figsize=(6, 5))
+                im1 = ax1.contourf(X_grid, T_grid, u_pinn, levels=50, cmap='viridis')
+                ax1.set_xlabel('x')
+                ax1.set_ylabel('t')
+                ax1.set_title('PINN Solution')
+                plt.colorbar(im1, ax=ax1)
+                st.pyplot(fig1)
+
+            with col2:
+                st.write("**数値解法 (FDM)**")
+                fig2, ax2 = plt.subplots(figsize=(6, 5))
+                im2 = ax2.contourf(X_grid, T_grid, u_fdm, levels=50, cmap='viridis')
+                ax2.set_xlabel('x')
+                ax2.set_ylabel('t')
+                ax2.set_title('FDM Solution')
+                plt.colorbar(im2, ax=ax2)
+                st.pyplot(fig2)
+
+            with col3:
+                st.write("**誤差分布**")
+                fig3, ax3 = plt.subplots(figsize=(6, 5))
+                error_map = np.abs(u_pinn - u_fdm)
+                im3 = ax3.contourf(X_grid, T_grid, error_map, levels=50, cmap='hot')
+                ax3.set_xlabel('x')
+                ax3.set_ylabel('t')
+                ax3.set_title('Absolute Error (PINN - FDM)')
+                plt.colorbar(im3, ax=ax3)
+                st.pyplot(fig3)
+
+    # 解析解タブ（解析解を計算する場合のみ）
+    if compute_analytical:
+        with tab2:
+            st.header("✨ 解析解（Cole-Hopf変換）")
+
+            st.write("""
+            **Cole-Hopf変換**を用いてBurgers方程式を熱方程式に変換し、解析的に解いています。
+
+            変換: $u = -2\\nu \\frac{\\partial \\phi}{\\partial x} / \\phi$
+
+            これによりBurgers方程式は熱方程式 $\\frac{\\partial \\phi}{\\partial t} = \\nu \\frac{\\partial^2 \\phi}{\\partial x^2}$ に変換されます。
+            """)
+
+            # 解析解のヒートマップ
+            st.subheader("解析解の時空間分布")
+            fig, ax = plt.subplots(figsize=(10, 6))
+            X_ana, T_ana = np.meshgrid(x_analytical, t_analytical)
+            im = ax.contourf(X_ana, T_ana, u_analytical, levels=50, cmap='viridis')
+            ax.set_xlabel('x', fontsize=12)
+            ax.set_ylabel('t', fontsize=12)
+            ax.set_title('Analytical Solution u(x,t)', fontsize=14)
+            plt.colorbar(im, ax=ax, label='u')
+            st.pyplot(fig)
+
+            # 複数の時刻でのスナップショット
+            st.subheader("時刻ごとのスナップショット（解析解）")
+            time_snapshots = [0, len(t_analytical)//4, len(t_analytical)//2, 3*len(t_analytical)//4, len(t_analytical)-1]
+
+            fig, axes = plt.subplots(1, 5, figsize=(15, 3))
+            for i, idx in enumerate(time_snapshots):
+                axes[i].plot(x_analytical, u_analytical[idx, :], 'k-', linewidth=2)
+                axes[i].set_xlabel('x')
+                axes[i].set_ylabel('u')
+                axes[i].set_title(f't = {t_analytical[idx]:.3f}')
+                axes[i].grid(True, alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig)
+
+    with (tab3 if compute_analytical else tab2):
+        st.header("🧠 PINN結果")
 
         # 損失の履歴
         st.subheader("訓練の損失履歴")
@@ -229,8 +389,8 @@ else:
         plt.colorbar(im, ax=ax, label='u')
         st.pyplot(fig)
 
-    with tab3:
-        st.header("数値解法 (有限差分法) 結果")
+    with (tab4 if compute_analytical else tab3):
+        st.header("🔢 数値解法 (有限差分法) 結果")
 
         # FDM解のヒートマップ
         st.subheader("FDM解の時空間分布")
@@ -256,45 +416,148 @@ else:
         plt.tight_layout()
         st.pyplot(fig)
 
-    with tab4:
-        st.header("誤差分析")
+    with (tab5 if compute_analytical else tab4):
+        st.header("📈 誤差分析")
 
-        # 誤差統計
-        st.subheader("誤差統計")
-        col1, col2 = st.columns(2)
+        if compute_analytical:
+            st.subheader("解析解との誤差（最も信頼できる比較）")
 
-        with col1:
-            st.metric("L2相対誤差", f"{errors['L2_relative_error']:.6f}")
-            st.metric("最大絶対誤差", f"{errors['max_absolute_error']:.6f}")
-            st.metric("平均絶対誤差", f"{errors['mean_absolute_error']:.6f}")
+            col1, col2 = st.columns(2)
 
-        with col2:
-            error_std = np.std(np.abs(u_pinn - u_fdm))
-            st.metric("誤差の標準偏差", f"{error_std:.6f}")
-            st.metric("相対誤差 (%)", f"{errors['L2_relative_error']*100:.2f}%")
+            with col1:
+                st.write("**PINN vs 解析解**")
+                st.metric("L2相対誤差", f"{errors_pinn_vs_analytical['L2_relative_error']:.6f}")
+                st.metric("最大絶対誤差", f"{errors_pinn_vs_analytical['max_absolute_error']:.6f}")
+                st.metric("平均絶対誤差", f"{errors_pinn_vs_analytical['mean_absolute_error']:.6f}")
 
-        # 誤差のヒストグラム
-        st.subheader("誤差の分布")
-        fig, ax = plt.subplots(figsize=(10, 4))
-        error_flat = (u_pinn - u_fdm).flatten()
-        ax.hist(error_flat, bins=50, edgecolor='black', alpha=0.7)
-        ax.set_xlabel('Error (u_PINN - u_FDM)')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Error Distribution')
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+            with col2:
+                st.write("**FDM vs 解析解**")
+                st.metric("L2相対誤差", f"{errors_fdm_vs_analytical['L2_relative_error']:.6f}")
+                st.metric("最大絶対誤差", f"{errors_fdm_vs_analytical['max_absolute_error']:.6f}")
+                st.metric("平均絶対誤差", f"{errors_fdm_vs_analytical['mean_absolute_error']:.6f}")
 
-        # 時間ごとの誤差推移
-        st.subheader("時間ごとの誤差推移")
-        time_errors = [np.linalg.norm(u_pinn[i, :] - u_fdm[i, :]) for i in range(len(t_fdm))]
+            # 誤差のヒートマップ
+            st.subheader("誤差分布（vs 解析解）")
 
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(t_fdm, time_errors, 'r-', linewidth=2)
-        ax.set_xlabel('時間 t')
-        ax.set_ylabel('L2ノルム誤差')
-        ax.set_title('時間発展に伴う誤差')
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.write("**PINN - 解析解**")
+                fig1, ax1 = plt.subplots(figsize=(8, 5))
+                error_pinn = np.abs(u_pinn_ana - u_analytical)
+                im1 = ax1.contourf(X_ana, T_ana, error_pinn, levels=50, cmap='hot')
+                ax1.set_xlabel('x')
+                ax1.set_ylabel('t')
+                ax1.set_title('|PINN - Analytical|')
+                plt.colorbar(im1, ax=ax1)
+                st.pyplot(fig1)
+
+            with col2:
+                st.write("**FDM - 解析解**")
+                fig2, ax2 = plt.subplots(figsize=(8, 5))
+                error_fdm = np.abs(u_fdm_ana - u_analytical)
+                im2 = ax2.contourf(X_ana, T_ana, error_fdm, levels=50, cmap='hot')
+                ax2.set_xlabel('x')
+                ax2.set_ylabel('t')
+                ax2.set_title('|FDM - Analytical|')
+                plt.colorbar(im2, ax=ax2)
+                st.pyplot(fig2)
+
+        else:
+            # 誤差統計（PINN vs FDM）
+            st.subheader("誤差統計（PINN vs FDM）")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.metric("L2相対誤差", f"{errors_vs_fdm['L2_relative_error']:.6f}")
+                st.metric("最大絶対誤差", f"{errors_vs_fdm['max_absolute_error']:.6f}")
+                st.metric("平均絶対誤差", f"{errors_vs_fdm['mean_absolute_error']:.6f}")
+
+            with col2:
+                error_std = np.std(np.abs(u_pinn - u_fdm))
+                st.metric("誤差の標準偏差", f"{error_std:.6f}")
+                st.metric("相対誤差 (%)", f"{errors_vs_fdm['L2_relative_error']*100:.2f}%")
+
+            # 誤差のヒストグラム
+            st.subheader("誤差の分布")
+            fig, ax = plt.subplots(figsize=(10, 4))
+            error_flat = (u_pinn - u_fdm).flatten()
+            ax.hist(error_flat, bins=50, edgecolor='black', alpha=0.7)
+            ax.set_xlabel('Error (u_PINN - u_FDM)')
+            ax.set_ylabel('Frequency')
+            ax.set_title('Error Distribution')
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+
+            # 時間ごとの誤差推移
+            st.subheader("時間ごとの誤差推移")
+            time_errors = [np.linalg.norm(u_pinn[i, :] - u_fdm[i, :]) for i in range(len(t_fdm))]
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(t_fdm, time_errors, 'r-', linewidth=2)
+            ax.set_xlabel('時間 t')
+            ax.set_ylabel('L2ノルム誤差')
+            ax.set_title('時間発展に伴う誤差')
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+
+    # 詳細比較タブ（解析解を計算する場合のみ）
+    if compute_analytical:
+        with tab6:
+            st.header("📉 詳細比較")
+
+            st.subheader("時間ごとの誤差推移（vs 解析解）")
+
+            # PINNとFDMの誤差を時間ごとに計算
+            time_errors_pinn = [np.linalg.norm(u_pinn_ana[i, :] - u_analytical[i, :]) for i in range(len(t_analytical))]
+            time_errors_fdm = [np.linalg.norm(u_fdm_ana[i, :] - u_analytical[i, :]) for i in range(len(t_analytical))]
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(t_analytical, time_errors_pinn, 'r-', linewidth=2, label='PINN vs 解析解')
+            ax.plot(t_analytical, time_errors_fdm, 'b-', linewidth=2, label='FDM vs 解析解')
+            ax.set_xlabel('時間 t')
+            ax.set_ylabel('L2ノルム誤差')
+            ax.set_title('時間発展に伴う誤差の比較')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+
+            # 誤差の比較表
+            st.subheader("誤差の比較表")
+
+            import pandas as pd
+
+            comparison_df = pd.DataFrame({
+                '手法': ['PINN', 'FDM'],
+                'L2相対誤差': [
+                    f"{errors_pinn_vs_analytical['L2_relative_error']:.6f}",
+                    f"{errors_fdm_vs_analytical['L2_relative_error']:.6f}"
+                ],
+                '最大絶対誤差': [
+                    f"{errors_pinn_vs_analytical['max_absolute_error']:.6f}",
+                    f"{errors_fdm_vs_analytical['max_absolute_error']:.6f}"
+                ],
+                '平均絶対誤差': [
+                    f"{errors_pinn_vs_analytical['mean_absolute_error']:.6f}",
+                    f"{errors_fdm_vs_analytical['mean_absolute_error']:.6f}"
+                ]
+            })
+
+            st.table(comparison_df)
+
+            # どちらが正確か判定
+            st.subheader("精度評価")
+
+            if errors_pinn_vs_analytical['L2_relative_error'] < errors_fdm_vs_analytical['L2_relative_error']:
+                st.success("✅ PINNの方がFDMより解析解に近い結果を得ています！")
+            else:
+                st.info("ℹ️ FDMの方がPINNより解析解に近い結果を得ています。")
+
+            st.write(f"""
+            - PINN誤差: {errors_pinn_vs_analytical['L2_relative_error']:.6f}
+            - FDM誤差: {errors_fdm_vs_analytical['L2_relative_error']:.6f}
+            - 誤差の差: {abs(errors_pinn_vs_analytical['L2_relative_error'] - errors_fdm_vs_analytical['L2_relative_error']):.6f}
+            """)
 
 # フッター
 st.markdown("---")

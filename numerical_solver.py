@@ -138,25 +138,108 @@ def solve_implicit_step(u_old, dx, dt, nu, nx):
     return u_new
 
 
-def compute_error_metrics(u_pinn, u_fdm):
+def solve_burgers_analytical(x_range, t_range, nx=256, nt=100, nu=0.01/np.pi):
+    """
+    Burgers方程式の解析解（Cole-Hopf変換による）
+
+    初期条件: u(x, 0) = -sin(πx)
+    境界条件: u(-1, t) = u(1, t) = 0
+
+    Cole-Hopf変換: u = -2ν * ∂φ/∂x / φ
+    これによりBurgers方程式は熱方程式に変換される: ∂φ/∂t = ν * ∂²φ/∂x²
+
+    Args:
+        x_range: [x_min, x_max]
+        t_range: [t_min, t_max]
+        nx: 空間方向のグリッド数
+        nt: 時間方向のグリッド数
+        nu: 粘性係数
+
+    Returns:
+        x: 空間座標配列
+        t: 時間座標配列
+        u: 解析解 (nt x nx)
+    """
+    from scipy.integrate import quad
+    from scipy.special import erf
+
+    x_min, x_max = x_range
+    t_min, t_max = t_range
+
+    x = np.linspace(x_min, x_max, nx)
+    t = np.linspace(t_min, t_max, nt)
+
+    u = np.zeros((nt, nx))
+
+    # Cole-Hopf変換を使った解析解の計算
+    # φ(x,t)を熱方程式の基本解を使って計算
+    for i_t, t_val in enumerate(t):
+        if t_val < 1e-10:  # t = 0 の場合は初期条件を使用
+            u[i_t, :] = -np.sin(np.pi * x)
+        else:
+            for i_x, x_val in enumerate(x):
+                # φとその導関数を数値積分で計算
+                # φ(x,t) = ∫ G(x,y,t) * φ0(y) dy
+                # G(x,y,t) = 1/√(4πνt) * exp(-(x-y)²/(4νt)) : 熱方程式の基本解
+                # φ0(y) = exp(∫[0 to y] u0(s)/(2ν) ds) = exp(cos(πy)/(2νπ))
+
+                def integrand_phi(y):
+                    """φの積分"""
+                    G = 1.0 / np.sqrt(4 * np.pi * nu * t_val) * \
+                        np.exp(-(x_val - y)**2 / (4 * nu * t_val))
+                    phi0 = np.exp(np.cos(np.pi * y) / (2 * nu * np.pi))
+                    return G * phi0
+
+                def integrand_dphi(y):
+                    """∂φ/∂x の積分"""
+                    G = 1.0 / np.sqrt(4 * np.pi * nu * t_val) * \
+                        np.exp(-(x_val - y)**2 / (4 * nu * t_val))
+                    dG_dx = -(x_val - y) / (2 * nu * t_val) * G
+                    phi0 = np.exp(np.cos(np.pi * y) / (2 * nu * np.pi))
+                    return dG_dx * phi0
+
+                # 数値積分で計算（積分範囲を [-3, 3] 程度に制限して効率化）
+                y_min = max(x_min, x_val - 5 * np.sqrt(nu * t_val))
+                y_max = min(x_max, x_val + 5 * np.sqrt(nu * t_val))
+
+                try:
+                    phi, _ = quad(integrand_phi, y_min, y_max, limit=100)
+                    dphi_dx, _ = quad(integrand_dphi, y_min, y_max, limit=100)
+
+                    # u = -2ν * (∂φ/∂x) / φ
+                    if abs(phi) > 1e-10:
+                        u[i_t, i_x] = -2 * nu * dphi_dx / phi
+                    else:
+                        u[i_t, i_x] = 0.0
+                except:
+                    u[i_t, i_x] = 0.0
+
+        # 境界条件を適用
+        u[i_t, 0] = 0.0
+        u[i_t, -1] = 0.0
+
+    return x, t, u
+
+
+def compute_error_metrics(u_test, u_reference):
     """
     誤差指標を計算
 
     Args:
-        u_pinn: PINNによる解
-        u_fdm: 数値解法による解
+        u_test: 検証対象の解（例：PINNやFDM）
+        u_reference: 参照解（例：解析解やFDM）
 
     Returns:
-        L2相対誤差、最大絶対誤差
+        L2相対誤差、最大絶対誤差、平均絶対誤差
     """
     # L2相対誤差
-    l2_error = np.linalg.norm(u_pinn - u_fdm) / np.linalg.norm(u_fdm)
+    l2_error = np.linalg.norm(u_test - u_reference) / np.linalg.norm(u_reference)
 
     # 最大絶対誤差
-    max_error = np.max(np.abs(u_pinn - u_fdm))
+    max_error = np.max(np.abs(u_test - u_reference))
 
     # 平均絶対誤差
-    mean_error = np.mean(np.abs(u_pinn - u_fdm))
+    mean_error = np.mean(np.abs(u_test - u_reference))
 
     return {
         'L2_relative_error': l2_error,
